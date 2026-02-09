@@ -1,5 +1,5 @@
 import inspect
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 import logging
 
@@ -15,7 +15,6 @@ from open_webui.env import (
 )
 
 log = logging.getLogger(__name__)
-
 
 _CONNECTION_CACHE = {}
 
@@ -53,8 +52,8 @@ class SentinelRedisProxy:
                                     yield value
                                 return
                             except (
-                                redis.exceptions.ConnectionError,
-                                redis.exceptions.ReadOnlyError,
+                                    redis.exceptions.ConnectionError,
+                                    redis.exceptions.ReadOnlyError,
                             ) as e:
                                 if i < REDIS_SENTINEL_MAX_RETRY_COUNT - 1:
                                     log.debug(
@@ -84,8 +83,8 @@ class SentinelRedisProxy:
                             return await result
                         return result
                     except (
-                        redis.exceptions.ConnectionError,
-                        redis.exceptions.ReadOnlyError,
+                            redis.exceptions.ConnectionError,
+                            redis.exceptions.ReadOnlyError,
                     ) as e:
                         if i < REDIS_SENTINEL_MAX_RETRY_COUNT - 1:
                             log.debug(
@@ -112,8 +111,8 @@ class SentinelRedisProxy:
                         method = getattr(self._master(), item)
                         return method(*args, **kwargs)
                     except (
-                        redis.exceptions.ConnectionError,
-                        redis.exceptions.ReadOnlyError,
+                            redis.exceptions.ConnectionError,
+                            redis.exceptions.ReadOnlyError,
                     ) as e:
                         if i < REDIS_SENTINEL_MAX_RETRY_COUNT - 1:
                             log.debug(
@@ -138,13 +137,19 @@ def parse_redis_service_url(redis_url):
     if parsed_url.scheme != "redis" and parsed_url.scheme != "rediss":
         raise ValueError("Invalid Redis URL scheme. Must be 'redis' or 'rediss'.")
 
-    return {
+    query_params = parse_qs(parsed_url.query)
+    query_params = {k: v[0] if len(v) == 1 else v for k, v in query_params.items()}
+
+    query_param = {
         "username": parsed_url.username or None,
         "password": parsed_url.password or None,
         "service": parsed_url.hostname or "mymaster",
         "port": parsed_url.port or 6379,
         "db": int(parsed_url.path.lstrip("/") or 0),
+        "ssl": parsed_url.scheme == "rediss",
+        **query_params
     }
+    return query_param
 
 
 def get_redis_client(async_mode=False):
@@ -163,13 +168,12 @@ def get_redis_client(async_mode=False):
 
 
 def get_redis_connection(
-    redis_url,
-    redis_sentinels,
-    redis_cluster=False,
-    async_mode=False,
-    decode_responses=True,
+        redis_url,
+        redis_sentinels,
+        redis_cluster=False,
+        async_mode=False,
+        decode_responses=True,
 ):
-
     cache_key = (
         redis_url,
         tuple(redis_sentinels) if redis_sentinels else (),
@@ -188,14 +192,23 @@ def get_redis_connection(
         # If using sentinel in async mode
         if redis_sentinels:
             redis_config = parse_redis_service_url(redis_url)
+            exclude_keys = {"port", "db", "service"}
+            sentinel_kwargs = {k: v for k, v in redis_config.items() if k not in exclude_keys}
+
+            connection_kwargs = {
+                "port": redis_config["port"],
+                "db": redis_config["db"],
+                "ssl": redis_config["ssl"],
+                "username": redis_config["username"],
+                "password": redis_config["password"],
+                "decode_responses": decode_responses,
+                "socket_connect_timeout": REDIS_SOCKET_CONNECT_TIMEOUT,
+            }
+
             sentinel = redis.sentinel.Sentinel(
                 redis_sentinels,
-                port=redis_config["port"],
-                db=redis_config["db"],
-                username=redis_config["username"],
-                password=redis_config["password"],
-                decode_responses=decode_responses,
-                socket_connect_timeout=REDIS_SOCKET_CONNECT_TIMEOUT,
+                sentinel_kwargs=sentinel_kwargs,
+                **connection_kwargs,
             )
             connection = SentinelRedisProxy(
                 sentinel,
@@ -215,14 +228,23 @@ def get_redis_connection(
 
         if redis_sentinels:
             redis_config = parse_redis_service_url(redis_url)
+            exclude_keys = {"port", "db", "service"}
+            sentinel_kwargs = {k: v for k, v in redis_config.items() if k not in exclude_keys}
+
+            connection_kwargs = {
+                "port": redis_config["port"],
+                "db": redis_config["db"],
+                "ssl": redis_config["ssl"],
+                "username": redis_config["username"],
+                "password": redis_config["password"],
+                "decode_responses": decode_responses,
+                "socket_connect_timeout": REDIS_SOCKET_CONNECT_TIMEOUT,
+            }
+
             sentinel = redis.sentinel.Sentinel(
                 redis_sentinels,
-                port=redis_config["port"],
-                db=redis_config["db"],
-                username=redis_config["username"],
-                password=redis_config["password"],
-                decode_responses=decode_responses,
-                socket_connect_timeout=REDIS_SOCKET_CONNECT_TIMEOUT,
+                sentinel_kwargs=sentinel_kwargs,
+                **connection_kwargs,
             )
             connection = SentinelRedisProxy(
                 sentinel,
